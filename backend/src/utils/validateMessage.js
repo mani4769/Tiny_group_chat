@@ -24,6 +24,13 @@ function validateMessage(msg) {
       return { valid: true };
     }
 
+    case MESSAGE_TYPES.JOIN_ROOM: {
+      if (typeof msg.room !== "string" || msg.room.trim().length === 0) {
+        return { valid: false, error: "Valid 'room' is required for join_room" };
+      }
+      return { valid: true };
+    }
+
     case MESSAGE_TYPES.CHAT: {
       if (typeof msg.text !== "string" || msg.text.trim().length === 0) {
         return { valid: false, error: "Non-empty 'text' is required" };

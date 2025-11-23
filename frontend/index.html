@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Tiny WebSocket Chat</title>
+    <title>Multi-Room Chat</title>
     <!-- Favicon: external URL used to avoid missing /favicon.ico 404s during development -->
     <link rel="icon" href="https://www.google.com/favicon.ico" />
     <link rel="stylesheet" href="styles.css" />
@@ -12,14 +12,19 @@
       <!-- Chat Header -->
       <div class="chat-header">
         <div class="header-left">
-          <h1>Tiny Chat</h1>
-          <div class="current-room">Global Chat Room</div>
+          <h1>Multi-Room Chat</h1>
+          <div class="current-room" id="currentRoomDisplay">Select a room to join</div>
         </div>
         <div class="header-status">
           <span id="status" class="status">
             <span class="status-indicator"></span>
-            Disconnected
+            Connecting...
           </span>
+          <div id="roomSwitcher" class="room-switcher" style="display: none;">
+            <div id="roomSwitchButtons" class="room-switch-buttons">
+              <!-- Switch buttons will be populated by JavaScript -->
+            </div>
+          </div>
         </div>
       </div>
 
@@ -28,10 +33,18 @@
         <input
           type="text"
           id="usernameInput"
-          placeholder="Enter your name to join chat..."
+          placeholder="Enter your name..."
           maxlength="20"
         />
-        <button id="joinBtn">Join Chat</button>
+        <button id="joinBtn">Join</button>
+      </div>
+
+      <!-- Room selection section -->
+      <div class="room-section" id="roomSection" style="display: none;">
+        <h3>Select a room to join:</h3>
+        <div class="room-buttons" id="roomButtons">
+          <!-- Room buttons will be populated by JavaScript -->
+        </div>
       </div>
 
       <!-- Chat messages -->
@@ -42,7 +55,7 @@
         <input
           type="text"
           id="messageInput"
-          placeholder="Type a message..."
+          placeholder="Select a room to start chatting..."
           disabled
         />
         <button id="sendBtn" disabled>

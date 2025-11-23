@@ -1,11 +1,15 @@
 // backend/src/chatServer.js
-// Single-room chat server with basic persistence
+// Multi-room chat server with room-based persistence
 
 const WebSocket = require("ws");
 const MESSAGE_TYPES = require("./messageTypes");
 const { validateMessage } = require("./utils/validateMessage");
-const fs = require('fs').promises;
-const path = require('path');
+const { 
+  loadRoomHistory, 
+  addMessageToRoom, 
+  getAvailableRooms, 
+  isValidRoom 
+} = require("./utils/roomPersistence");
 
 class ChatServer {
   /**
@@ -14,52 +18,18 @@ class ChatServer {
   constructor(wss) {
     this.wss = wss;
 
-    // Map of WebSocket -> { name: string }
+    // Map of WebSocket -> { name: string, currentRoom: string|null }
     this.clients = new Map();
 
-    // In-memory message history
-    this.history = [];
-    this.MAX_HISTORY = 100;
+    // Map of room name -> Set of WebSocket connections in that room
+    this.rooms = new Map();
 
-    // Data directory for persistence
-    this.dataDir = path.join(__dirname, '..', '..', 'data');
-    this.messagesFile = path.join(this.dataDir, 'messages.json');
+    // Initialize rooms
+    getAvailableRooms().forEach(room => {
+      this.rooms.set(room, new Set());
+    });
 
-    this.init();
-  }
-
-  async init() {
-    // Create data directory if it doesn't exist
-    try {
-      await fs.access(this.dataDir);
-    } catch {
-      await fs.mkdir(this.dataDir, { recursive: true });
-    }
-
-    // Load message history
-    await this.loadHistory();
     this.setup();
-  }
-
-  async loadHistory() {
-    try {
-      const data = await fs.readFile(this.messagesFile, 'utf8');
-      this.history = JSON.parse(data);
-      console.log(`Loaded ${this.history.length} messages from history`);
-    } catch {
-      console.log('No existing message history found, starting fresh');
-      this.history = [];
-    }
-  }
-
-  async saveHistory() {
-    try {
-      // Only keep last 100 messages in file
-      const toSave = this.history.slice(-100);
-      await fs.writeFile(this.messagesFile, JSON.stringify(toSave, null, 2));
-    } catch (error) {
-      console.error('Failed to save message history:', error);
-    }
   }
 
   setup() {
@@ -71,8 +41,11 @@ class ChatServer {
   handleConnection(ws) {
     console.log("New client connected");
 
-    // Send history to the new client
-    this.sendHistory(ws);
+    // Send available rooms list
+    this.send(ws, {
+      type: MESSAGE_TYPES.ROOM_LIST,
+      rooms: getAvailableRooms()
+    });
 
     // Set up message handler
     ws.on("message", (data) => this.handleRawMessage(ws, data));
@@ -92,32 +65,27 @@ class ChatServer {
     }
   }
 
-  broadcast(obj) {
+  broadcastToRoom(roomName, obj, excludeWs = null) {
+    const roomClients = this.rooms.get(roomName);
+    if (!roomClients) return;
+
     const data = JSON.stringify(obj);
-    for (const client of this.wss.clients) {
-      if (client.readyState === WebSocket.OPEN) {
+    for (const client of roomClients) {
+      if (client !== excludeWs && client.readyState === WebSocket.OPEN) {
         client.send(data);
       }
     }
   }
 
-  sendHistory(ws) {
-    if (this.history.length === 0) return;
-
-    this.send(ws, {
-      type: MESSAGE_TYPES.HISTORY,
-      messages: this.history,
-    });
-  }
-
-  addToHistory(payload) {
-    this.history.push(payload);
-    if (this.history.length > this.MAX_HISTORY) {
-      this.history.shift();
+  async sendRoomHistory(ws, roomName) {
+    const history = await loadRoomHistory(roomName);
+    if (history.length > 0) {
+      this.send(ws, {
+        type: MESSAGE_TYPES.HISTORY,
+        messages: history,
+        room: roomName
+      });
     }
-
-    // Save to file (async, don't wait)
-    this.saveHistory().catch(console.error);
   }
 
   handleRawMessage(ws, data) {
@@ -148,6 +116,10 @@ class ChatServer {
         this.handleJoin(ws, msg);
         break;
 
+      case MESSAGE_TYPES.JOIN_ROOM:
+        this.handleJoinRoom(ws, msg);
+        break;
+
       case MESSAGE_TYPES.CHAT:
         this.handleChatMessage(ws, msg);
         break;
@@ -163,25 +135,111 @@ class ChatServer {
   handleJoin(ws, msg) {
     const name = msg.name.trim();
 
-    this.clients.set(ws, { name });
-    console.log(`User joined: ${name}`);
+    // Enforce unique username across connected clients
+    for (const [clientWs, info] of this.clients.entries()) {
+      if (info && info.name === name) {
+        // Notify the requester that the username is taken
+        this.send(ws, {
+          type: MESSAGE_TYPES.USERNAME_TAKEN,
+          message: `Username '${name}' is already in use. Please choose another.`
+        });
+        return;
+      }
+    }
 
-    const joinMessage = {
+    // Set user info but don't put them in any room yet
+    this.clients.set(ws, { name, currentRoom: null });
+    console.log(`User registered: ${name}`);
+
+    // Send confirmation and room list
+    this.send(ws, {
       type: MESSAGE_TYPES.SYSTEM,
-      message: `${name} joined the chat`,
-      timestamp: Date.now(),
-    };
+      message: `Welcome ${name}! Please select a room to join.`
+    });
 
-    this.addToHistory(joinMessage);
-    this.broadcast(joinMessage);
+    this.send(ws, {
+      type: MESSAGE_TYPES.ROOM_LIST,
+      rooms: getAvailableRooms()
+    });
   }
 
-  handleChatMessage(ws, msg) {
+  async handleJoinRoom(ws, msg) {
+    const clientInfo = this.clients.get(ws);
+    if (!clientInfo) {
+      this.send(ws, {
+        type: MESSAGE_TYPES.ERROR,
+        message: "You must register with a username first",
+      });
+      return;
+    }
+
+    const roomName = msg.room.trim();
+    if (!isValidRoom(roomName)) {
+      this.send(ws, {
+        type: MESSAGE_TYPES.ERROR,
+        message: `Invalid room: ${roomName}`,
+      });
+      return;
+    }
+
+    const wasInRoom = !!clientInfo.currentRoom;
+
+    // Remove from current room if any
+    if (clientInfo.currentRoom) {
+      this.leaveCurrentRoom(ws, clientInfo);
+    }
+
+    // Add to new room
+    clientInfo.currentRoom = roomName;
+    this.rooms.get(roomName).add(ws);
+    
+    console.log(`${clientInfo.name} ${wasInRoom ? 'switched to' : 'joined'} room: ${roomName}`);
+
+    // Send room history to the user
+    await this.sendRoomHistory(ws, roomName);
+
+    // Create join message for the room history
+    const historySystemMessage = {
+      type: MESSAGE_TYPES.SYSTEM,
+      message: `${clientInfo.name} joined the room`,
+      timestamp: Date.now(),
+      room: roomName
+    };
+
+    // Persist the system message in room history
+    await addMessageToRoom(roomName, historySystemMessage);
+
+    // Broadcast a single live join event to other members (exclude the joining ws)
+    const liveJoinMsg = {
+      type: MESSAGE_TYPES.USER_JOINED_ROOM,
+      user: clientInfo.name,
+      timestamp: Date.now(),
+      room: roomName
+    };
+    this.broadcastToRoom(roomName, liveJoinMsg, ws);
+
+    // Confirm to user (private message)
+    const confirmText = wasInRoom ? `switched to room: ${roomName}` : `joined room: ${roomName}`;
+    this.send(ws, {
+      type: MESSAGE_TYPES.SYSTEM,
+      message: `You ${confirmText}`
+    });
+  }
+
+  async handleChatMessage(ws, msg) {
     const clientInfo = this.clients.get(ws);
     if (!clientInfo) {
       this.send(ws, {
         type: MESSAGE_TYPES.ERROR,
         message: "You must join with a username before sending messages",
+      });
+      return;
+    }
+
+    if (!clientInfo.currentRoom) {
+      this.send(ws, {
+        type: MESSAGE_TYPES.ERROR,
+        message: "You must join a room before sending messages",
       });
       return;
     }
@@ -194,36 +252,64 @@ class ChatServer {
       from: clientInfo.name,
       message: text,
       timestamp: Date.now(),
+      room: clientInfo.currentRoom
     };
 
-    // Add to history
-    this.addToHistory(payload);
+    // Add to room history
+    await addMessageToRoom(clientInfo.currentRoom, payload);
 
-    // Broadcast to everyone
-    this.broadcast(payload);
+    // Broadcast to everyone in the room
+    this.broadcastToRoom(clientInfo.currentRoom, payload);
   }
 
-  handleClose(ws) {
+  leaveCurrentRoom(ws, clientInfo) {
+    if (!clientInfo.currentRoom) return;
+
+    const roomClients = this.rooms.get(clientInfo.currentRoom);
+    if (roomClients) {
+      roomClients.delete(ws);
+    }
+
+    console.log(`${clientInfo.name} left room: ${clientInfo.currentRoom}`);
+    // Persist a system leave message into history
+    const leaveHistoryMsg = {
+      type: MESSAGE_TYPES.SYSTEM,
+      message: `${clientInfo.name} left the room`,
+      timestamp: Date.now(),
+      room: clientInfo.currentRoom
+    };
+    // Note: we persist asynchronously (don't await here to avoid blocking)
+    addMessageToRoom(clientInfo.currentRoom, leaveHistoryMsg).catch(err => console.error(err));
+
+    // Broadcast a single live leave event to remaining room members
+    const liveLeave = {
+      type: MESSAGE_TYPES.USER_LEFT_ROOM,
+      user: clientInfo.name,
+      timestamp: Date.now(),
+      room: clientInfo.currentRoom
+    };
+    this.broadcastToRoom(clientInfo.currentRoom, liveLeave, ws);
+
+    // Clear current room
+    clientInfo.currentRoom = null;
+  }
+
+  async handleClose(ws) {
     const info = this.clients.get(ws);
     if (!info) {
       console.log("Client disconnected before joining");
       return;
     }
 
+    // If user was in a room, notify others they left
+    if (info.currentRoom) {
+      // When closing, reuse leaveCurrentRoom logic so leave is handled consistently
+      this.leaveCurrentRoom(ws, info);
+    }
+
     this.clients.delete(ws);
     console.log(`Client disconnected: ${info.name}`);
-
-    const leaveMessage = {
-      type: MESSAGE_TYPES.SYSTEM,
-      message: `${info.name} left the chat`,
-      timestamp: Date.now(),
-    };
-
-    this.addToHistory(leaveMessage);
-    this.broadcast(leaveMessage);
   }
 }
-
-module.exports = ChatServer;
 
 module.exports = ChatServer;
