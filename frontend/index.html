@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Tiny WebSocket Chat</title>
+    <!-- Favicon: external URL used to avoid missing /favicon.ico 404s during development -->
+    <link rel="icon" href="https://www.google.com/favicon.ico" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <!-- Chat Header -->
+      <div class="chat-header">
+        <div class="header-left">
+          <h1>Tiny Chat</h1>
+          <div class="current-room">Global Chat Room</div>
+        </div>
+        <div class="header-status">
+          <span id="status" class="status">
+            <span class="status-indicator"></span>
+            Disconnected
+          </span>
+        </div>
+      </div>
+
+      <!-- Username / Join section -->
+      <div class="join-section" id="joinSection">
+        <input
+          type="text"
+          id="usernameInput"
+          placeholder="Enter your name to join chat..."
+          maxlength="20"
+        />
+        <button id="joinBtn">Join Chat</button>
+      </div>
+
+      <!-- Chat messages -->
+      <div id="chatWindow" class="chat-window"></div>
+
+      <!-- Message input section -->
+      <div class="message-section">
+        <input
+          type="text"
+          id="messageInput"
+          placeholder="Type a message..."
+          disabled
+        />
+        <button id="sendBtn" disabled>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M2,21L23,12L2,3V10L17,12L2,14V21Z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "name": "tiny-chat-backend",
+  "version": "1.0.0",
+  "description": "Simple WebSocket group chat backend",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.3"
+  }
+}
